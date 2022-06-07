@@ -293,20 +293,17 @@ set(USE_PT_TVMDSOOP OFF)
 # Whether to use STL's std::unordered_map or TVM's POD compatible Map
 set(USE_FALLBACK_STL_MAP OFF)
 
-# Whether to use hexagon device
-set(USE_HEXAGON_DEVICE OFF)
+# Whether to enable Hexagon support
+set(USE_HEXAGON OFF)
 set(USE_HEXAGON_SDK /path/to/sdk)
 
-# Whether to build the hexagon launcher
-set(USE_HEXAGON_LAUNCHER OFF)
-
-# Whether to build the minimal support android rpc server for hexagon
-set(USE_HEXAGON_PROXY_RPC OFF)
+# Whether to build the minimal support android rpc server for Hexagon
+set(USE_HEXAGON_RPC OFF)
 
 # Hexagon architecture to target when compiling TVM itself (not the target for
 # compiling _by_ TVM). This applies to components like the TVM runtime, but is
 # also used to select correct include/library paths from the Hexagon SDK when
-# building offloading runtime for Android.
+# building runtime for Android.
 # Valid values are v65, v66, v68, v69.
 set(USE_HEXAGON_ARCH "v66")
 
@@ -336,18 +333,6 @@ set(USE_LIBBACKTRACE AUTO)
 # not be included in the final executable. This would make the corresponding
 # runtime functions to be unavailable to the program.
 set(BUILD_STATIC_RUNTIME OFF)
-
-
-# Caches the build so that building is faster when switching between branches.
-# If you switch branches, build and then encounter a linking error, you may
-# need to regenerate the build tree through "make .." (the cache will
-# still provide significant speedups).
-# Possible values:
-# - AUTO: search for path to ccache, disable if not found.
-# - ON: enable ccache by searching for the path to ccache, report an error if not found
-# - OFF: disable ccache
-# - /path/to/ccache: use specific path to ccache
-set(USE_CCACHE AUTO)
 
 # Whether to enable PAPI support in profiling. PAPI provides access to hardware
 # counters while profiling.

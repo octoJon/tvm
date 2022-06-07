@@ -74,15 +74,17 @@ class TaskSchedulerNode : public runtime::Object {
   /*! \brief The runner of the scheduler. */
   Runner runner{nullptr};
   /*! \brief The database of the scheduler. */
-  Database database{nullptr};
-  /*! \brief The maximum number of trials allowed. */
-  int max_trials;
+  Optional<Database> database;
   /*! \brief The cost model of the scheduler. */
   Optional<CostModel> cost_model;
   /*! \brief The list of measure callbacks of the scheduler. */
   Array<MeasureCallback> measure_callbacks;
+  /*! \brief The maximum number of trials allowed. */
+  int max_trials;
   /*! \brief The number of trials already conducted. */
   int num_trials_already;
+  /*! \brief The tuning task's logging function. t*/
+  PackedFunc logging_func;
 
   /*! \brief The default destructor. */
   virtual ~TaskSchedulerNode() = default;
@@ -92,10 +94,11 @@ class TaskSchedulerNode : public runtime::Object {
     v->Visit("builder", &builder);
     v->Visit("runner", &runner);
     v->Visit("database", &database);
-    v->Visit("max_trials", &max_trials);
     v->Visit("cost_model", &cost_model);
     v->Visit("measure_callbacks", &measure_callbacks);
+    v->Visit("max_trials", &max_trials);
     v->Visit("num_trials_already", &num_trials_already);
+    // `logging_func` is not visited
   }
 
   /*! \brief Auto-tuning. */
@@ -234,15 +237,17 @@ class TaskScheduler : public runtime::ObjectRef {
    * \param max_trials The maximum number of trials.
    * \param cost_model The cost model of the scheduler.
    * \param measure_callbacks The measure callbacks of the scheduler.
+   * \param logging_func The tuning task's logging function.
    * \return The task scheduler created.
    */
-  TVM_DLL static TaskScheduler RoundRobin(Array<TuneContext> tasks,        //
-                                          Builder builder,                 //
-                                          Runner runner,                   //
-                                          Database database,               //
-                                          int max_trials,                  //
-                                          Optional<CostModel> cost_model,  //
-                                          Optional<Array<MeasureCallback>> measure_callbacks);
+  TVM_DLL static TaskScheduler RoundRobin(Array<TuneContext> tasks,                            //
+                                          Builder builder,                                     //
+                                          Runner runner,                                       //
+                                          Optional<Database> database,                         //
+                                          Optional<CostModel> cost_model,                      //
+                                          Optional<Array<MeasureCallback>> measure_callbacks,  //
+                                          int max_trials,                                      //
+                                          PackedFunc logging_func);
   /*!
    * \brief Create a task scheduler that fetches tasks in a gradient based fashion.
    * \param tasks The tasks to be tuned.
@@ -253,6 +258,7 @@ class TaskScheduler : public runtime::ObjectRef {
    * \param max_trials The maximum number of trials.
    * \param cost_model The cost model of the scheduler.
    * \param measure_callbacks The measure callbacks of the scheduler.
+   * \param logging_func The tuning task's logging function.
    * \param alpha The parameter alpha to control gradient computation.
    * \param window_size The parameter to control backward window size.
    * \param seed The random seed.
@@ -262,10 +268,11 @@ class TaskScheduler : public runtime::ObjectRef {
                                              Array<FloatImm> task_weights,                        //
                                              Builder builder,                                     //
                                              Runner runner,                                       //
-                                             Database database,                                   //
-                                             int max_trials,                                      //
+                                             Optional<Database> database,                         //
                                              Optional<CostModel> cost_model,                      //
                                              Optional<Array<MeasureCallback>> measure_callbacks,  //
+                                             int max_trials,                                      //
+                                             PackedFunc logging_func,                             //
                                              double alpha,                                        //
                                              int window_size,                                     //
                                              support::LinearCongruentialEngine::TRandState seed);
@@ -278,6 +285,7 @@ class TaskScheduler : public runtime::ObjectRef {
    * \param max_trials The maximum number of trials.
    * \param cost_model The cost model of the scheduler.
    * \param measure_callbacks The measure callbacks of the scheduler.
+   * \param logging_func The tuning task's logging function.
    * \param f_tune The packed function of `Tune`.
    * \param f_initialize_task The packed function of `InitializeTask`.
    * \param f_touch_task The packed function of `TouchTask`.
@@ -289,10 +297,11 @@ class TaskScheduler : public runtime::ObjectRef {
       Array<TuneContext> tasks,                                   //
       Builder builder,                                            //
       Runner runner,                                              //
-      Database database,                                          //
-      int max_trials,                                             //
+      Optional<Database> database,                                //
       Optional<CostModel> cost_model,                             //
       Optional<Array<MeasureCallback>> measure_callbacks,         //
+      int max_trials,                                             //
+      PackedFunc logging_func,                                    //
       PyTaskSchedulerNode::FTune f_tune,                          //
       PyTaskSchedulerNode::FInitializeTask f_initialize_task,     //
       PyTaskSchedulerNode::FTouchTask f_touch_task,               //

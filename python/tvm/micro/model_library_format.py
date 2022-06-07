@@ -31,7 +31,6 @@ from tvm.micro import get_standalone_crt_dir
 from .._ffi import get_global_func
 from ..contrib import utils
 from ..driver import build_module
-from ..runtime import ndarray as _nd
 from ..relay.backend import executor_factory
 from ..relay.backend.name_transforms import to_c_variable_style, prefix_generated_name
 from ..relay import param_dict
@@ -47,7 +46,7 @@ class UnsupportedInModelLibraryFormatError(Exception):
 
 
 def generate_c_interface_header(
-    module_name, inputs, outputs, pools, devices, workspace_size, include_path
+    module_name, inputs, outputs, pools, io_pool_allocations, devices, workspace_size, include_path
 ):
     """Generate C Interface header to be included in MLF"""
     mangled_name = to_c_variable_style(prefix_generated_name(module_name))
@@ -55,7 +54,7 @@ def generate_c_interface_header(
 
     interface_c_create = tvm._ffi.get_global_func("runtime.InterfaceCCreate")
     interface_c_module = interface_c_create(
-        module_name, inputs, outputs, pools, devices, workspace_size
+        module_name, inputs, outputs, pools, io_pool_allocations, devices, workspace_size
     )
 
     with open(metadata_header, "w") as header_file:
@@ -281,22 +280,17 @@ def _convert_tuple_to_outputs(ret_type, offset=0):
 
 
 def _get_inputs_and_outputs_from_module(mod):
-    main_func = _get_main_relay_func(mod)
-    inputs = [argument.name_hint for argument in main_func.params]
-
-    if "output_tensor_names" in main_func.attrs:
-        outputs = main_func.attrs["output_tensor_names"]
-    else:
-        if isinstance(main_func.ret_type, TupleType):
-            outputs = _convert_tuple_to_outputs(main_func.ret_type)
-        else:
-            outputs = ["output"]
-
+    inputs = [str(input_var.name) for input_var in mod.executor_codegen_metadata.inputs]
+    outputs = list(mod.executor_codegen_metadata.outputs)
     return inputs, outputs
 
 
 def _get_pools_from_module(mod):
     return list(dict(mod.executor_codegen_metadata.pool_inputs).values())
+
+
+def _get_io_pool_allocation_from_module(mod):
+    return dict(mod.executor_codegen_metadata.io_pool_allocations)
 
 
 def _should_generate_interface_header(mod):
@@ -318,7 +312,7 @@ def _make_tar(source_dir, tar_file_path, mod):
             tar_f.add(get_standalone_crt_dir(), arcname=STANDALONE_CRT_URL)
 
 
-_GENERATED_VERSION = 5
+_GENERATED_VERSION = 6
 
 
 def _export_graph_model_library_format(
@@ -341,7 +335,7 @@ def _export_graph_model_library_format(
         "model_name": mod.libmod_name,
         "export_datetime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%SZ"),
         "memory": _build_memory_map(mod),
-        "target": {int(k): str(v) for k, v in mod.target.items()},
+        "target": [str(t) for t in mod.target],
         "executors": executor,
         "style": "full-model",
     }
@@ -369,9 +363,17 @@ def _export_graph_model_library_format(
         inputs, outputs = _get_inputs_and_outputs_from_module(mod)
         devices = mod.get_devices()
         pools = _get_pools_from_module(mod)
+        io_pool_allocations = _get_io_pool_allocation_from_module(mod)
         workspace_size = int(metadata["memory"]["functions"]["main"][0]["workspace_size_bytes"])
         generate_c_interface_header(
-            mod.libmod_name, inputs, outputs, pools, devices, workspace_size, include_path
+            mod.libmod_name,
+            inputs,
+            outputs,
+            pools,
+            io_pool_allocations,
+            devices,
+            workspace_size,
+            include_path,
         )
 
     parameters_dir = tempdir / "parameters"
@@ -420,7 +422,9 @@ def _write_tir_and_build_operator_memory_map(src_dir, targets, ir_module_by_targ
         return shape
 
     memory_map = {}
-    for target_device_type, target in targets.items():
+    for target in targets:
+        # TODO(mbs): The device type is not unique, better would be to use target.kind.name
+        target_device_type = target.kind.device_type
         ir_mod = ir_module_by_target[target]
         printer = get_global_func("tir.ModelLibraryFormatPrinter")(False, None, False)
         with open(src_dir / f"tir-{target_device_type}.txt", "w") as f:
@@ -457,7 +461,7 @@ def _export_operator_model_library_format(mod: build_module.OperatorModule, temp
     file_name : str
         Path to the .tar archive to generate.
     """
-    targets = {}
+    targets = []
     for target in mod.ir_module_by_target.keys():
         if str(target.kind) not in ("llvm", "c"):
             raise UnsupportedInModelLibraryFormatError(
@@ -465,7 +469,7 @@ def _export_operator_model_library_format(mod: build_module.OperatorModule, temp
                 "Model Library Format"
             )
 
-        targets[int(_nd.device(str(target)).device_type)] = target
+        targets.append(target)
 
     src_dir = tempdir / "src"
     src_dir.mkdir()
@@ -476,7 +480,7 @@ def _export_operator_model_library_format(mod: build_module.OperatorModule, temp
         "model_name": mod.name,
         "export_datetime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%SZ"),
         "memory": memory_map,
-        "target": {k: str(v) for k, v in targets.items()},
+        "target": [str(t) for t in targets],
         "executors": [],
         "style": "operator",
     }

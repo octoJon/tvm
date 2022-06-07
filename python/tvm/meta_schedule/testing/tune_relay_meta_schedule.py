@@ -18,16 +18,12 @@
 import argparse
 import json
 import logging
-import os
 
 import numpy as np  # type: ignore
 import tvm
 from tvm import meta_schedule as ms
-from tvm.ir.transform import PassContext
-from tvm.meta_schedule.integration import extract_task_from_relay
 from tvm.meta_schedule.testing.custom_builder_runner import run_module_via_rpc
 from tvm.meta_schedule.testing.relay_workload import get_network
-from tvm.relay import build as relay_build
 
 
 def _parse_args():
@@ -94,57 +90,11 @@ def _parse_args():
     return parsed
 
 
-logging.basicConfig()
-logging.getLogger("tvm.meta_schedule").setLevel(logging.DEBUG)
+logging.basicConfig(
+    format="%(asctime)s.%(msecs)03d %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+)
+logging.getLogger("tvm.meta_schedule").setLevel(logging.INFO)
 ARGS = _parse_args()
-
-
-def tune_each_task(
-    mod,
-    target,
-    config,
-    runner,
-    work_dir,
-    params,
-):
-    extracted_tasks = extract_task_from_relay(mod, target, params)
-    database = ms.database.JSONDatabase(
-        path_workload=os.path.join(work_dir, "default_database_workload.json"),
-        path_tuning_record=os.path.join(work_dir, "default_database_tuning_record.json"),
-    )
-    for task in extracted_tasks:
-        # pylint: disable=protected-access
-        tune_context = ms.tune.Parse._tune_context(
-            tune_context=None,
-            mod=ms.tune.Parse._mod(task.dispatched[0]),
-            target=target,
-            config=config,
-            task_name=task.task_name,
-            space_generator=None,
-            sch_rules=None,
-            postprocs=None,
-            mutator_probs=None,
-            num_threads=os.cpu_count(),
-        )
-        task_scheduler = ms.tune.Parse._task_scheduler(
-            None,
-            [tune_context],
-            task_weights=[1.0],
-            builder=ms.tune.Parse._builder(None),
-            runner=ms.tune.Parse._runner(runner),
-            database=database,
-            max_trials=config.max_trials_per_task,
-            cost_model=ms.tune.Parse._cost_model(None),
-            measure_callbacks=ms.tune.Parse._callbacks(None),
-        )
-        # pylint: enable=protected-access
-        task_scheduler.tune()
-    with target, ms.integration.ApplyHistoryBest(database):
-        with PassContext(
-            opt_level=3,
-            config={"relay.backend.use_meta_schedule": True},
-        ):
-            return relay_build(mod, target=target, params=params)
 
 
 def main():
@@ -153,10 +103,13 @@ def main():
         ARGS.input_shape,
         cache_dir=ARGS.cache_dir,
     )
+    input_info = {input_name: input_shape}
+    input_data = {}
     print(f"Workload: {ARGS.workload}")
-    print(f"  input_name: {input_name}")
-    print(f"  input_shape: {input_shape}")
-    print(f"  input_dtype: {input_dtype}")
+    for input_name, input_shape in input_info.items():
+        print(f"  input_name: {input_name}")
+        print(f"  input_shape: {input_shape}")
+        print(f"  input_dtype: {input_dtype}")
     alloc_repeat = 1
     runner = ms.runner.RPCRunner(
         rpc_config=ARGS.rpc_config,
@@ -169,25 +122,27 @@ def main():
         alloc_repeat=alloc_repeat,
         max_workers=ARGS.rpc_workers,
     )
-    # lib = tune_each_task(
     lib = ms.tune_relay(
         mod=mod,
         target=ARGS.target,
-        config=ms.EvolutionarySearchConfig(
+        config=ms.TuneConfig(
+            strategy="evolutionary",
             num_trials_per_iter=64,
             max_trials_per_task=ARGS.num_trials,
             max_trials_global=ARGS.num_trials,
-            init_min_unmeasured=50,
         ),
         runner=runner,  # type: ignore
         work_dir=ARGS.work_dir,
         params=params,
     )
     graph, rt_mod, params = lib.graph_json, lib.lib, lib.params
-    if input_dtype.startswith("float"):
-        input_data = np.random.uniform(size=input_shape).astype(input_dtype)
-    else:
-        input_data = np.random.randint(low=0, high=10000, size=input_shape, dtype=input_dtype)
+    for input_name, input_shape in input_info.items():
+        if input_dtype.startswith("float"):
+            input_data[input_name] = np.random.uniform(size=input_shape).astype(input_dtype)
+        else:
+            input_data[input_name] = np.random.randint(
+                low=0, high=10000, size=input_shape, dtype=input_dtype
+            )
 
     def f_timer(rt_mod, dev, input_data):
         # pylint: disable=import-outside-toplevel
@@ -196,7 +151,8 @@ def main():
         # pylint: enable=import-outside-toplevel
 
         mod = GraphModule(rt_mod["default"](dev))
-        mod.set_input(input_name, input_data)
+        for input_name, input_value in input_data.items():
+            mod.set_input(input_name, input_value)
         ftimer = mod.module.time_evaluator(
             "run",
             dev,
@@ -210,7 +166,7 @@ def main():
         rpc_config=ARGS.rpc_config,
         lib=lib,
         dev_type=ARGS.target.kind.name,
-        args=[input_data],
+        args=input_data,
         continuation=f_timer,
     )
 
@@ -220,7 +176,8 @@ def main():
 
         # pylint: enable=import-outside-toplevel
         mod = create(graph, rt_mod, dev)
-        mod.set_input(input_name, input_data)
+        for input_name, input_value in input_data.items():
+            mod.set_input(input_name, input_value)
         graph_nodes = [n["name"] for n in json.loads(graph)["nodes"]]
         graph_time = mod.run_individual(number=10, repeat=1, min_repeat_ms=5000)
         print("|graph_nodes| = ", len(graph_nodes))
@@ -233,7 +190,7 @@ def main():
         rpc_config=ARGS.rpc_config,
         lib=rt_mod,
         dev_type=ARGS.target.kind.name,
-        args=[input_data],
+        args=input_data,
         continuation=f_per_layer,
     )
 

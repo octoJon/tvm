@@ -42,11 +42,15 @@ def schedule_reduce_cuda(attrs, outs, target):
         return topi.cuda.schedule_reduce(outs)
 
 
-@schedule_concatenate.register(["cuda", "gpu"])
-def schedule_concatenate_cuda(attrs, outs, target):
-    """schedule concatenate for cuda"""
-    with target:
-        return topi.cuda.schedule_injective(outs)
+@concatenate_strategy.register(["cuda", "gpu"])
+def concatenate_strategy_cuda(attrs, inputs, out_type, target):
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_concat(topi.transform.concatenate),
+        wrap_topi_schedule(topi.cuda.schedule_injective),
+        name="concatenate.cuda",
+    )
+    return strategy
 
 
 @schedule_pool.register(["cuda", "gpu"])
@@ -145,7 +149,7 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
         if layout == "NCHW":
             assert kernel_layout == "OIHW"
             if (
-                (target.kind.name in ["cuda", "vulkan"])
+                (target.kind.name in ["cuda", "vulkan", "rocm"])
                 and data.dtype in ("int8", "uint8")
                 and kernel.dtype in ("int8", "uint8")
             ):
@@ -297,7 +301,7 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
                                     Need to satisfy tensor core schedule."
                 )
         elif (
-            (target.kind.name in ["cuda", "vulkan"])
+            (target.kind.name in ["cuda", "vulkan", "rocm"])
             and layout == "NCHW4c"
             and data.dtype in ["int8", "uint8"]
         ):
@@ -376,7 +380,7 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
             ic_chunk = in_channels // 4
 
             if (
-                (target.kind.name in ["cuda", "vulkan"])
+                (target.kind.name in ["cuda", "vulkan", "rocm"])
                 and data.dtype in ["int8", "uint8"]
                 and kernel.dtype in ["int8", "uint8"]
                 and channels % groups == 0
@@ -836,7 +840,7 @@ def dense_strategy_cuda(attrs, inputs, out_type, target):
     b, i = get_const_tuple(data.shape)
     o, _ = get_const_tuple(weights.shape)
     if (
-        target.kind.name in ["cuda", "vulkan"]
+        target.kind.name in ["cuda", "vulkan", "rocm"]
         and data.dtype == "int8"
         and weights.dtype == "int8"
         and out_type.dtype == "int32"
@@ -1311,5 +1315,16 @@ def einsum_strategy_cuda(attrs, inputs, out_type, target):
         wrap_compute_einsum(topi.einsum),
         wrap_topi_schedule(topi.generic.schedule_extern),
         name="einsum.cuda",
+    )
+    return strategy
+
+
+@stft_strategy.register(["cuda", "gpu"])
+def stft_strategy_cuda(attrs, inputs, out_type, target):
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_stft(topi.cuda.stft),
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="stft.cuda",
     )
     return strategy

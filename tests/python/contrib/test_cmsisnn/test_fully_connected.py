@@ -23,14 +23,9 @@ import tvm
 from tvm import relay
 from tvm.relay.op.contrib import cmsisnn
 
-
-from tests.python.relay.aot.aot_test_utils import (
-    AOTTestModel,
-    AOT_CORSTONE300_RUNNER,
+from tvm.testing.aot import generate_ref_data, AOTTestModel, compile_and_run
+from tvm.micro.testing.aot_test_utils import (
     AOT_USMP_CORSTONE300_RUNNER,
-    AOT_DEFAULT_RUNNER,
-    generate_ref_data,
-    compile_and_run,
 )
 from utils import (
     skip_if_no_reference_system,
@@ -100,7 +95,6 @@ def make_model(
 
 
 @tvm.testing.requires_cmsisnn
-@pytest.mark.xfail(strict=False, reason="Flaky test: https://github.com/apache/tvm/issues/10213")
 @pytest.mark.parametrize("in_shape", [(2, 28), (1, 64)])
 @pytest.mark.parametrize("out_channels", [12, 128])
 @pytest.mark.parametrize("enable_bias", [False, True])
@@ -240,4 +234,4 @@ def test_invalid_parameters(
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__] + sys.argv[1:]))
+    tvm.testing.main()

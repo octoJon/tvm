@@ -83,6 +83,49 @@ struct CreateFuncInfo {
   }
 };
 
+class LayoutFreePlaceholdersNormalizer : public StmtMutator {
+ public:
+  PrimFunc Process(PrimFunc func) {
+    for (int i = 0, n = func->params.size(); i < n; ++i) {
+      if (const auto* v = func->params[i].as<VarNode>()) {
+        if (Optional<Buffer> buffer = func->buffer_map.Get(GetRef<Var>(v))) {
+          buffer2index_[buffer.value()] = i;
+        }
+      }
+    }
+    PrimFuncNode* f = func.CopyOnWrite();
+    f->body = VisitStmt(std::move(f->body));
+    if (this->layout_free_buffer_indices_.empty()) {
+      return func;
+    }
+    Array<Integer> indices;
+    indices.reserve(this->layout_free_buffer_indices_.size());
+    for (int i : this->layout_free_buffer_indices_) {
+      indices.push_back(Integer(i));
+    }
+    return WithAttr(std::move(func), attr, indices);
+  }
+
+  Stmt VisitStmt_(const BlockNode* _block) final {
+    Block block = Downcast<Block>(StmtMutator::VisitStmt_(_block));
+    if (Optional<ObjectRef> ann = block->annotations.Get(attr)) {
+      Array<Buffer> buffers = Downcast<Array<Buffer>>(ann);
+      for (Buffer buffer : buffers) {
+        auto it = buffer2index_.find(buffer);
+        if (it != buffer2index_.end()) {
+          layout_free_buffer_indices_.insert(it->second);
+        }
+      }
+      block.CopyOnWrite()->annotations.erase(attr);
+    }
+    return block;
+  }
+
+  std::unordered_map<tir::Buffer, int, ObjectPtrHash, ObjectPtrEqual> buffer2index_;
+  std::set<int> layout_free_buffer_indices_;
+  String attr = "layout_free_placeholders";
+};
+
 BlockRealize GenerateBlockFromTensors(const te::ComputeOp& compute_op,
                                       const Array<te::Tensor>& tensors, Array<PrimExpr> bindings,
                                       PrimExpr expr_body, CreateFuncInfo* info,
@@ -221,6 +264,12 @@ BlockRealize GenerateBlockFromTensors(const te::ComputeOp& compute_op,
   }
   // Set script_parsing_detect_access
   annotations.Set(tir::attr::script_parsing_detect_access, IntImm(DataType::Int(32), 3));
+  if (iter_vars.empty()) {
+    IterVar iter(Range::FromMinExtent(0, 1), Var("vi", DataType::Int(32)), IterVarType::kDataPar);
+    PrimExpr binding(0);
+    iter_vars.push_back(iter);
+    bindings.push_back(binding);
+  }
 
   // Step 6. Create Block and BlockRealize.
   return BlockRealize(/*iter_values=*/std::move(bindings),
@@ -244,7 +293,9 @@ Stmt GenerateStmtFromCompute(const te::ComputeOp& compute_op, CreateFuncInfo* in
   axes.insert(axes.end(), compute_op->reduce_axis.begin(), compute_op->reduce_axis.end());
   Array<PrimExpr> bindings;
   for (size_t i = 0; i < axes.size(); ++i) {
-    bindings.push_back(Var("i" + std::to_string(i)));
+    const IterVar& axis = axes[i];
+    int bits = std::max(axis->dom->min.dtype().bits(), axis->dom->extent.dtype().bits());
+    bindings.push_back(Var("i" + std::to_string(i), runtime::DataType::Int(bits)));
   }
   // Step 2. Generate block bodies.
   Array<Stmt> seq_stmt;
@@ -409,43 +460,11 @@ PrimFunc CreatePrimFunc(const Array<te::Tensor>& arg_list) {
                             {{"global_symbol", String("main")}, {"tir.noalias", Bool(true)}});
   const auto* complete = runtime::Registry::Get("script.Complete");
   ICHECK(complete);
-  return (*complete)(func, info.root_alloc);
-}
-
-PrimFunc CreatePrimFuncFromOutputs(const Array<te::Tensor>& outputs) {
-  std::vector<te::Tensor> stack;
-  std::unordered_set<const te::TensorNode*> visited;
-  for (const te::Tensor& output : outputs) {
-    if (!visited.count(output.get())) {
-      visited.insert(output.get());
-      stack.push_back(output);
-    }
-  }
-
-  Array<te::Tensor> arg_list;
-  while (!stack.empty()) {
-    te::Tensor tensor = stack.back();
-    stack.pop_back();
-    if (tensor->op->IsInstance<te::PlaceholderOpNode>()) {
-      arg_list.push_back(tensor);
-    } else if (tensor->op->IsInstance<te::ComputeOpNode>()) {
-      Array<te::Tensor> inputs = tensor->op->InputTensors();
-      for (const te::Tensor& input : inputs) {
-        if (!visited.count(input.get())) {
-          visited.insert(input.get());
-          stack.push_back(input);
-        }
-      }
-    }
-  }
-  for (const te::Tensor& output : outputs) {
-    arg_list.push_back(output);
-  }
-  return CreatePrimFunc(arg_list);
+  func = (*complete)(std::move(func), info.root_alloc);
+  return LayoutFreePlaceholdersNormalizer().Process(std::move(func));
 }
 
 TVM_REGISTER_GLOBAL("te.CreatePrimFunc").set_body_typed(CreatePrimFunc);
-TVM_REGISTER_GLOBAL("te.CreatePrimFuncFromOutputs").set_body_typed(CreatePrimFuncFromOutputs);
 
 }  // namespace tir
 }  // namespace tvm

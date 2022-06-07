@@ -30,7 +30,7 @@ pip3 install --upgrade \
     numpy~=1.19.5 \
     orderedset \
     packaging \
-    Pillow \
+    Pillow==9.1.0 \
     psutil \
     pytest \
     tlcpack-sphinx-addon==0.2.1 \
@@ -42,4 +42,5 @@ pip3 install --upgrade \
     synr==0.6.0 \
     junitparser==2.4.2 \
     six \
-    tornado
+    tornado \
+    pytest-lazy-fixture
